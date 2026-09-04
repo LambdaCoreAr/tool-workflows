@@ -1,5 +1,10 @@
 name: release
 
+# tool-release.yml@v1 is defined in this repository, so a release that ships a
+# broken tool-release.yml cannot produce its own fix. Recovery is the same manual
+# bootstrap that created v1: `git tag -f v1 <last-good-sha> && git push origin -f v1`,
+# then merge the fix normally.
+
 on:
   push:
     branches: [main]
