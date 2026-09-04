@@ -99,7 +99,7 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ github.token }}
         run: |
-          echo ".tool-workflows/" >> .npmignore
+          printf '%s\n' '.tool-workflows/' 'notes.md' >> .npmignore
           npm publish
       - name: Publish the NuGet package
         if: steps.guard.outputs.is_template == 'false' && steps.version.outputs.bump != 'none' && inputs.language == 'dotnet'
