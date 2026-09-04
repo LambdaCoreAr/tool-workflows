@@ -1,0 +1,119 @@
+name: ci-dotnet
+
+on:
+  workflow_call:
+    inputs:
+      kind:
+        description: service or library
+        required: true
+        type: string
+      workflows_ref:
+        description: ref of LambdaCoreAr/tool-workflows to load scripts from
+        required: false
+        default: v1
+        type: string
+      project_dir:
+        description: directory holding the project
+        required: false
+        default: .
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Load scripts
+        uses: actions/checkout@v4
+        with:
+          repository: LambdaCoreAr/tool-workflows
+          ref: ${{ inputs.workflows_ref }}
+          path: .tool-workflows
+      - name: Detect project
+        id: stack
+        run: .tool-workflows/scripts/detect-stack.sh "${{ inputs.project_dir }}" dotnet >> "$GITHUB_OUTPUT"
+      - name: Nothing to lint
+        if: steps.stack.outputs.has_project == 'false'
+        run: echo "no project file in ${{ inputs.project_dir }} — nothing to lint"
+      - name: Set up .NET
+        if: steps.stack.outputs.has_project == 'true'
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Format check
+        if: steps.stack.outputs.has_project == 'true'
+        working-directory: ${{ inputs.project_dir }}
+        run: dotnet format --verify-no-changes
+
+  pr-title:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Load scripts
+        uses: actions/checkout@v4
+        with:
+          repository: LambdaCoreAr/tool-workflows
+          ref: ${{ inputs.workflows_ref }}
+          path: .tool-workflows
+      - name: Validate the pull request title
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+          BODY: ${{ github.event.pull_request.body }}
+        run: .tool-workflows/scripts/pr-title-check.sh "$TITLE" "$BODY"
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Load scripts
+        uses: actions/checkout@v4
+        with:
+          repository: LambdaCoreAr/tool-workflows
+          ref: ${{ inputs.workflows_ref }}
+          path: .tool-workflows
+      - name: Detect project
+        id: stack
+        run: .tool-workflows/scripts/detect-stack.sh "${{ inputs.project_dir }}" dotnet >> "$GITHUB_OUTPUT"
+      - name: Build image
+        if: inputs.kind == 'service'
+        run: docker build -t ci-build-check "${{ inputs.project_dir }}"
+      - name: Nothing to build
+        if: inputs.kind != 'service' && steps.stack.outputs.has_project == 'false'
+        run: echo "no project file in ${{ inputs.project_dir }} — nothing to build"
+      - name: Set up .NET
+        if: inputs.kind != 'service' && steps.stack.outputs.has_project == 'true'
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Build
+        if: inputs.kind != 'service' && steps.stack.outputs.has_project == 'true'
+        working-directory: ${{ inputs.project_dir }}
+        run: dotnet build --configuration Release
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Load scripts
+        uses: actions/checkout@v4
+        with:
+          repository: LambdaCoreAr/tool-workflows
+          ref: ${{ inputs.workflows_ref }}
+          path: .tool-workflows
+      - name: Detect project
+        id: stack
+        run: .tool-workflows/scripts/detect-stack.sh "${{ inputs.project_dir }}" dotnet >> "$GITHUB_OUTPUT"
+      - name: Nothing to test
+        if: steps.stack.outputs.has_project == 'false'
+        run: echo "no project file in ${{ inputs.project_dir }} — nothing to test"
+      - name: Set up .NET
+        if: steps.stack.outputs.has_project == 'true'
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Test
+        if: steps.stack.outputs.has_project == 'true'
+        working-directory: ${{ inputs.project_dir }}
+        run: dotnet test
