@@ -24,6 +24,11 @@ concurrency:
 jobs:
   apply:
     runs-on: ubuntu-latest
+    # Records the deployment; it does NOT gate it. GitHub offers no environment
+    # protection rules on private repositories under the Team plan — required_reviewers
+    # and wait_timer both return HTTP 422 — so PROD's gate is that apply-prod.yml has
+    # no automatic trigger. Do not add an assertion here expecting required_reviewers:
+    # it can never pass.
     environment: ${{ inputs.environment }}
     steps:
       - name: Validate the environment
