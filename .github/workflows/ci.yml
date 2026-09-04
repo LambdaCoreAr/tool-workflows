@@ -1,0 +1,8 @@
+name: ci
+
+on:
+  pull_request:
+
+jobs:
+  ci:
+    uses: LambdaCoreAr/tool-workflows/.github/workflows/ci-tool.yml@v1
