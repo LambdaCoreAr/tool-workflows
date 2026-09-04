@@ -56,3 +56,9 @@ jobs:
       kind: library
       project_dir: tests/fixtures/dotnet-populated
       workflows_ref: ${{ github.event.pull_request.head.sha }}
+
+  infra-placeholder:
+    uses: ./.github/workflows/ci-infra.yml
+    with:
+      project_dir: tests/fixtures/infra-placeholder
+      workflows_ref: ${{ github.event.pull_request.head.sha }}

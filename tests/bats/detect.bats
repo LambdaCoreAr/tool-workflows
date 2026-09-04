@@ -63,3 +63,14 @@ setup() {
   run "$BACKEND" "$FIX/infra-configured" prod
   [[ "$output" == "configured=false" ]]
 }
+
+@test "a directory with tf files has a tofu project" {
+  run "$STACK" "$FIX/infra-configured" tofu
+  [ "$status" -eq 0 ]
+  [[ "$output" == "has_project=true" ]]
+}
+
+@test "a directory without tf files has no tofu project" {
+  run "$STACK" "$FIX/infra-placeholder" tofu
+  [[ "$output" == "has_project=false" ]]
+}
