@@ -17,6 +17,10 @@ permissions:
   contents: write
   packages: write
 
+concurrency:
+  group: library-release-${{ github.repository }}
+  cancel-in-progress: false
+
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -51,6 +55,12 @@ jobs:
       - name: No version-bearing changes
         if: steps.guard.outputs.is_template == 'false' && steps.version.outputs.bump == 'none'
         run: echo "nothing version-bearing since the last tag — no release"
+      - name: Write the release notes
+        if: steps.guard.outputs.is_template == 'false' && steps.version.outputs.bump != 'none'
+        run: |
+          latest=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n1)
+          range=${latest:+${latest}..HEAD}
+          git log "${range:-HEAD}" --pretty='- %s' > notes.md
       - name: Set up Node
         if: steps.guard.outputs.is_template == 'false' && steps.version.outputs.bump != 'none' && inputs.language == 'node'
         uses: actions/setup-node@v4
@@ -58,42 +68,51 @@ jobs:
           node-version: '22'
           registry-url: https://npm.pkg.github.com
           scope: '@lambdacorear'
-      - name: Publish npm package
+      - name: Build and test the npm package
         if: steps.guard.outputs.is_template == 'false' && steps.version.outputs.bump != 'none' && inputs.language == 'node'
-        env:
-          NODE_AUTH_TOKEN: ${{ github.token }}
         run: |
           npm install --no-audit --no-fund
+          npm version "${{ steps.version.outputs.version }}" --no-git-tag-version --allow-same-version
           npm run build --if-present
           npm test
-          npm version "${{ steps.version.outputs.version }}" --no-git-tag-version
-          npm publish
       - name: Set up .NET
         if: steps.guard.outputs.is_template == 'false' && steps.version.outputs.bump != 'none' && inputs.language == 'dotnet'
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
-      - name: Publish NuGet package
+      - name: Build and test the NuGet package
         if: steps.guard.outputs.is_template == 'false' && steps.version.outputs.bump != 'none' && inputs.language == 'dotnet'
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           dotnet build --configuration Release "-p:Version=${{ steps.version.outputs.version }}"
           dotnet test --configuration Release --no-build
           dotnet pack --configuration Release --no-build \
             "-p:Version=${{ steps.version.outputs.version }}" --output ./artifacts
+      - name: Tag
+        if: steps.guard.outputs.is_template == 'false' && steps.version.outputs.bump != 'none'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          git tag "v${VERSION}"
+          git push origin "v${VERSION}"
+      - name: Publish the npm package
+        if: steps.guard.outputs.is_template == 'false' && steps.version.outputs.bump != 'none' && inputs.language == 'node'
+        env:
+          NODE_AUTH_TOKEN: ${{ github.token }}
+        run: |
+          echo ".tool-workflows/" >> .npmignore
+          npm publish
+      - name: Publish the NuGet package
+        if: steps.guard.outputs.is_template == 'false' && steps.version.outputs.bump != 'none' && inputs.language == 'dotnet'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
           dotnet nuget push "./artifacts/*.nupkg" \
             --source "https://nuget.pkg.github.com/LambdaCoreAr/index.json" \
-            --api-key "$GH_TOKEN" --skip-duplicate
-      - name: Tag and release
+            --api-key "$GH_TOKEN"
+      - name: Cut the release
         if: steps.guard.outputs.is_template == 'false' && steps.version.outputs.bump != 'none'
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          latest=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n1)
-          range=${latest:+${latest}..HEAD}
-          git log "${range:-HEAD}" --pretty='- %s' > notes.md
-          git tag "v${VERSION}"
-          git push origin "v${VERSION}"
           gh release create "v${VERSION}" --title "v${VERSION}" --notes-file notes.md
