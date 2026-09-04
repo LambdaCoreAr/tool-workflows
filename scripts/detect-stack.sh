@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Does this directory hold project files yet?
-# Usage: detect-stack.sh <dir> <node|dotnet>
+# Usage: detect-stack.sh <dir> <node|dotnet|tofu>
 set -euo pipefail
 
 dir=${1:?directory required}
@@ -21,6 +21,13 @@ case $language in
     # project inside node_modules from passing as this repository's own.
     if find "$dir" \( -name '*.csproj' -o -name '*.sln' \) \
          -not -path '*/node_modules/*' -not -path '*/.git/*' | grep -q .; then
+      found=true
+    else
+      found=false
+    fi
+    ;;
+  tofu)
+    if find "$dir" -maxdepth 1 -name '*.tf' | grep -q .; then
       found=true
     else
       found=false

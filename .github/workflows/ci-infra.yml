@@ -1,0 +1,121 @@
+name: ci-infra
+
+on:
+  workflow_call:
+    inputs:
+      workflows_ref:
+        description: ref of LambdaCoreAr/tool-workflows to load scripts from
+        required: false
+        default: v1
+        type: string
+      project_dir:
+        description: directory holding the OpenTofu configuration
+        required: false
+        default: .
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Load scripts
+        uses: actions/checkout@v4
+        with:
+          repository: LambdaCoreAr/tool-workflows
+          ref: ${{ inputs.workflows_ref }}
+          path: .tool-workflows
+      - name: Detect configuration
+        id: stack
+        run: .tool-workflows/scripts/detect-stack.sh "${{ inputs.project_dir }}" tofu >> "$GITHUB_OUTPUT"
+      - name: Nothing to lint
+        if: steps.stack.outputs.has_project == 'false'
+        run: echo "no .tf files in ${{ inputs.project_dir }} — nothing to lint"
+      - name: Set up OpenTofu
+        if: steps.stack.outputs.has_project == 'true'
+        uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: '1.8.5'
+      - name: Format check
+        if: steps.stack.outputs.has_project == 'true'
+        working-directory: ${{ inputs.project_dir }}
+        run: tofu fmt -check -recursive
+      - name: Validate
+        if: steps.stack.outputs.has_project == 'true'
+        working-directory: ${{ inputs.project_dir }}
+        run: |
+          tofu init -backend=false
+          tofu validate
+
+  pr-title:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Load scripts
+        uses: actions/checkout@v4
+        with:
+          repository: LambdaCoreAr/tool-workflows
+          ref: ${{ inputs.workflows_ref }}
+          path: .tool-workflows
+      - name: Validate the pull request title
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+          BODY: ${{ github.event.pull_request.body }}
+        run: .tool-workflows/scripts/pr-title-check.sh "$TITLE" "$BODY"
+
+  plan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: [dev, prod]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Load scripts
+        uses: actions/checkout@v4
+        with:
+          repository: LambdaCoreAr/tool-workflows
+          ref: ${{ inputs.workflows_ref }}
+          path: .tool-workflows
+      - name: Detect backend
+        id: backend
+        run: .tool-workflows/scripts/detect-backend.sh "${{ inputs.project_dir }}" "${{ matrix.environment }}" >> "$GITHUB_OUTPUT"
+      - name: Backend not configured
+        if: steps.backend.outputs.configured == 'false'
+        run: echo "backend-${{ matrix.environment }}.hcl is a placeholder — nothing to plan"
+      - name: Configure AWS credentials
+        if: steps.backend.outputs.configured == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars[format('AWS_ROLE_{0}', matrix.environment)] }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: Set up OpenTofu
+        if: steps.backend.outputs.configured == 'true'
+        uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: '1.8.5'
+      - name: Plan
+        if: steps.backend.outputs.configured == 'true'
+        working-directory: ${{ inputs.project_dir }}
+        run: |
+          tofu init -backend-config="backend-${{ matrix.environment }}.hcl"
+          tofu plan -var-file="environments/${{ matrix.environment }}.tfvars" -no-color | tee plan.txt
+      - name: Comment the plan
+        if: steps.backend.outputs.configured == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        working-directory: ${{ inputs.project_dir }}
+        run: |
+          {
+            echo "### tofu plan — ${{ matrix.environment }}"
+            echo '```'
+            tail -c 60000 plan.txt
+            echo '```'
+          } > comment.md
+          gh pr comment "${{ github.event.pull_request.number }}" --body-file comment.md
