@@ -1,0 +1,57 @@
+name: infra-apply
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: environment to apply
+        required: true
+        type: string
+      workflows_ref:
+        description: ref of LambdaCoreAr/tool-workflows to load scripts from
+        required: false
+        default: v1
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: infra-apply-${{ github.repository }}-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Load scripts
+        uses: actions/checkout@v4
+        with:
+          repository: LambdaCoreAr/tool-workflows
+          ref: ${{ inputs.workflows_ref }}
+          path: .tool-workflows
+      - name: Detect backend
+        id: backend
+        run: .tool-workflows/scripts/detect-backend.sh . "${{ inputs.environment }}" >> "$GITHUB_OUTPUT"
+      - name: Backend not configured
+        if: steps.backend.outputs.configured == 'false'
+        run: echo "backend-${{ inputs.environment }}.hcl is a placeholder — nothing to apply"
+      - name: Configure AWS credentials
+        if: steps.backend.outputs.configured == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars[format('AWS_ROLE_{0}', inputs.environment)] }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: Set up OpenTofu
+        if: steps.backend.outputs.configured == 'true'
+        uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: '1.8.5'
+      - name: Apply
+        if: steps.backend.outputs.configured == 'true'
+        run: |
+          tofu init -backend-config="backend-${{ inputs.environment }}.hcl"
+          tofu apply -auto-approve -var-file="environments/${{ inputs.environment }}.tfvars"
