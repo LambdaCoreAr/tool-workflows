@@ -1,0 +1,67 @@
+name: tool-release
+
+on:
+  workflow_call:
+    inputs:
+      workflows_ref:
+        description: ref of LambdaCoreAr/tool-workflows to load scripts from
+        required: false
+        default: v1
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tool-release-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Load scripts
+        uses: actions/checkout@v4
+        with:
+          repository: LambdaCoreAr/tool-workflows
+          ref: ${{ inputs.workflows_ref }}
+          path: .tool-workflows
+      - name: Template guard
+        id: guard
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/${{ github.repository }}" \
+            | .tool-workflows/scripts/template-guard.sh >> "$GITHUB_OUTPUT"
+      - name: Template repository — nothing to release
+        if: steps.guard.outputs.is_template == 'true'
+        run: echo "${{ github.repository }} is a template — no release"
+      - name: Compute the next version
+        id: version
+        if: steps.guard.outputs.is_template == 'false'
+        run: |
+          latest=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n1)
+          range=${latest:+${latest}..HEAD}
+          git log "${range:-HEAD}" --pretty=%s \
+            | .tool-workflows/scripts/next-version.sh "$latest" >> "$GITHUB_OUTPUT"
+      - name: No version-bearing changes
+        if: steps.guard.outputs.is_template == 'false' && steps.version.outputs.bump == 'none'
+        run: echo "nothing version-bearing since the last tag — no release"
+      - name: Tag, move the major tag, and release
+        if: steps.guard.outputs.is_template == 'false' && steps.version.outputs.bump != 'none'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          major="v${VERSION%%.*}"
+          latest=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n1)
+          range=${latest:+${latest}..HEAD}
+          git log "${range:-HEAD}" --pretty='- %s' > notes.md
+          git tag "v${VERSION}"
+          git tag -f "$major"
+          git push origin "v${VERSION}"
+          git push origin -f "$major"
+          gh release create "v${VERSION}" --title "v${VERSION}" --notes-file notes.md
