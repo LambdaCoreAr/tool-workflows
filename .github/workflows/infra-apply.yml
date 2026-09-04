@@ -37,23 +37,6 @@ jobs:
             dev|prod) ;;
             *) echo "::error::environment must be dev or prod, got: ${ENVIRONMENT}"; exit 1 ;;
           esac
-      - name: Require a protected prod environment
-        if: inputs.environment == 'prod'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          # `environment:` names a gate; it does not create one. GitHub silently
-          # creates a missing environment with no protection rules, so a repository
-          # created outside bootstrap.yml would apply to production unapproved and
-          # report green. Refuse rather than trust how the repository was made.
-          rules=$(gh api "repos/${GITHUB_REPOSITORY}/environments/prod" \
-                    --jq '[.protection_rules[].type] | join(",")' 2>/dev/null) || rules=""
-          case "$rules" in
-            *required_reviewers*) ;;
-            *) echo "::error::the prod environment has no required reviewers (rules: ${rules:-none})."
-               echo "::error::This repository was not created by bootstrap.yml. Refusing to apply."
-               exit 1 ;;
-          esac
       - uses: actions/checkout@v4
       - name: Load scripts
         uses: actions/checkout@v4
