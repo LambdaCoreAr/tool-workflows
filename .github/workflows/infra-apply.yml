@@ -26,6 +26,34 @@ jobs:
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
     steps:
+      - name: Validate the environment
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          # This value selects the state backend and reaches three shell
+          # interpolations. An infra repository that adds workflow_dispatch to its
+          # caller would otherwise let a dispatcher supply arbitrary shell here.
+          case "$ENVIRONMENT" in
+            dev|prod) ;;
+            *) echo "::error::environment must be dev or prod, got: ${ENVIRONMENT}"; exit 1 ;;
+          esac
+      - name: Require a protected prod environment
+        if: inputs.environment == 'prod'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # `environment:` names a gate; it does not create one. GitHub silently
+          # creates a missing environment with no protection rules, so a repository
+          # created outside bootstrap.yml would apply to production unapproved and
+          # report green. Refuse rather than trust how the repository was made.
+          rules=$(gh api "repos/${GITHUB_REPOSITORY}/environments/prod" \
+                    --jq '[.protection_rules[].type] | join(",")' 2>/dev/null) || rules=""
+          case "$rules" in
+            *required_reviewers*) ;;
+            *) echo "::error::the prod environment has no required reviewers (rules: ${rules:-none})."
+               echo "::error::This repository was not created by bootstrap.yml. Refusing to apply."
+               exit 1 ;;
+          esac
       - uses: actions/checkout@v4
       - name: Load scripts
         uses: actions/checkout@v4
@@ -35,10 +63,31 @@ jobs:
           path: .tool-workflows
       - name: Detect backend
         id: backend
-        run: .tool-workflows/scripts/detect-backend.sh . "${{ inputs.environment }}" >> "$GITHUB_OUTPUT"
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          .tool-workflows/scripts/detect-backend.sh . "$ENVIRONMENT" >> "$GITHUB_OUTPUT"
+          # Out of the OpenTofu root before apply: a config that archives or globs
+          # the working directory would otherwise package the workflows repository
+          # into a deployed artifact.
+          rm -rf .tool-workflows
       - name: Backend not configured
         if: steps.backend.outputs.configured == 'false'
-        run: echo "backend-${{ inputs.environment }}.hcl is a placeholder — nothing to apply"
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: echo "backend-${ENVIRONMENT}.hcl is a placeholder — nothing to apply"
+      - name: Check the environment role is set
+        if: steps.backend.outputs.configured == 'true'
+        env:
+          ROLE: ${{ vars[format('AWS_ROLE_{0}', inputs.environment)] }}
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          # Without this the job dies inside configure-aws-credentials with
+          # "Credentials could not be loaded", naming nothing.
+          test -n "$ROLE" || {
+            echo "::error::AWS_ROLE_${ENVIRONMENT} is not set on this repository or organization"
+            exit 1
+          }
       - name: Configure AWS credentials
         if: steps.backend.outputs.configured == 'true'
         uses: aws-actions/configure-aws-credentials@v4
@@ -52,6 +101,13 @@ jobs:
           tofu_version: '1.8.5'
       - name: Apply
         if: steps.backend.outputs.configured == 'true'
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
         run: |
-          tofu init -backend-config="backend-${{ inputs.environment }}.hcl"
-          tofu apply -auto-approve -var-file="environments/${{ inputs.environment }}.tfvars"
+          # -reconfigure: a committed .terraform/ recording another environment's
+          # backend would otherwise abort init with a migration prompt.
+          # -input=false: a variable with no value must error, never wait on stdin.
+          # -migrate-state must never be added here — it would copy one
+          # environment's state into another's backend.
+          tofu init -input=false -reconfigure -backend-config="backend-${ENVIRONMENT}.hcl"
+          tofu apply -input=false -auto-approve -var-file="environments/${ENVIRONMENT}.tfvars"
