@@ -1,0 +1,127 @@
+name: service-build
+
+on:
+  workflow_call:
+    inputs:
+      language:
+        description: node or dotnet
+        required: true
+        type: string
+      infra_repo:
+        description: repository holding the environment pins
+        required: false
+        default: infra-platform
+        type: string
+      workflows_ref:
+        description: ref of LambdaCoreAr/tool-workflows to load scripts from
+        required: false
+        default: v1
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: service-build-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Load scripts
+        uses: actions/checkout@v4
+        with:
+          repository: LambdaCoreAr/tool-workflows
+          ref: ${{ inputs.workflows_ref }}
+          path: .tool-workflows
+      - name: Template guard
+        id: guard
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/${{ github.repository }}" \
+            | .tool-workflows/scripts/template-guard.sh >> "$GITHUB_OUTPUT"
+      - name: Template repository — nothing to build
+        if: steps.guard.outputs.is_template == 'true'
+        run: echo "${{ github.repository }} is a template — no build"
+      - name: Derive the service name
+        id: name
+        if: steps.guard.outputs.is_template == 'false'
+        run: |
+          repo="${GITHUB_REPOSITORY#*/}"
+          echo "name=${repo#svc-}" >> "$GITHUB_OUTPUT"
+      - name: Compute the target version
+        id: version
+        if: steps.guard.outputs.is_template == 'false'
+        run: |
+          latest=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n1)
+          range=${latest:+${latest}..HEAD}
+          git log "${range:-HEAD}" --pretty=%s \
+            | .tool-workflows/scripts/next-version.sh "$latest" >> "$GITHUB_OUTPUT"
+      - name: No version-bearing changes
+        if: steps.guard.outputs.is_template == 'false' && steps.version.outputs.bump == 'none'
+        run: echo "nothing version-bearing since the last release — no prerelease"
+      - name: Compute the prerelease number
+        id: rc
+        if: steps.guard.outputs.is_template == 'false' && steps.version.outputs.bump != 'none'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NAME: ${{ steps.name.outputs.name }}
+        run: |
+          gh api --paginate \
+            "/orgs/LambdaCoreAr/packages/container/${NAME}/versions" \
+            --jq '.[].metadata.container.tags[]' 2>/dev/null > tags.txt || : > tags.txt
+          .tool-workflows/scripts/rc-number.sh "${{ steps.version.outputs.version }}" \
+            < tags.txt >> "$GITHUB_OUTPUT"
+      - name: Log in to GHCR
+        if: steps.guard.outputs.is_template == 'false' && steps.version.outputs.bump != 'none'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Build and push the prerelease image
+        if: steps.guard.outputs.is_template == 'false' && steps.version.outputs.bump != 'none'
+        env:
+          TAG: ghcr.io/lambdacorear/${{ steps.name.outputs.name }}:${{ steps.version.outputs.version }}-rc.${{ steps.rc.outputs.rc }}
+        run: |
+          docker build -t "$TAG" .
+          docker push "$TAG"
+      - name: Mint an infra token
+        id: infra_token
+        if: steps.guard.outputs.is_template == 'false' && steps.version.outputs.bump != 'none'
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.INFRA_APP_ID }}
+          private-key: ${{ secrets.INFRA_APP_PRIVATE_KEY }}
+          owner: LambdaCoreAr
+          repositories: ${{ inputs.infra_repo }}
+      - name: Open the version-bump pull request
+        if: steps.guard.outputs.is_template == 'false' && steps.version.outputs.bump != 'none'
+        env:
+          GH_TOKEN: ${{ steps.infra_token.outputs.token }}
+          NAME: ${{ steps.name.outputs.name }}
+          VERSION: ${{ steps.version.outputs.version }}-rc.${{ steps.rc.outputs.rc }}
+          INFRA: LambdaCoreAr/${{ inputs.infra_repo }}
+        run: |
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/${INFRA}.git" infra
+          cd infra
+          git config user.name "lambdacore-infra-bot"
+          git config user.email "infra-bot@lambdacore.com.ar"
+          branch="bump/${NAME}-${VERSION}"
+          git checkout -b "$branch"
+          if grep -q "^${NAME}_version" environments/dev.tfvars; then
+            sed -i "s|^${NAME}_version.*|${NAME}_version = \"${VERSION}\"|" environments/dev.tfvars
+          else
+            echo "${NAME}_version = \"${VERSION}\"" >> environments/dev.tfvars
+          fi
+          git commit -am "chore: pin ${NAME} to ${VERSION} in dev"
+          git push -u origin "$branch"
+          gh pr create --title "chore: pin ${NAME} to ${VERSION} in dev" \
+            --body "Automated pin from ${GITHUB_REPOSITORY}@${GITHUB_SHA}."
+          gh pr merge --auto --squash
