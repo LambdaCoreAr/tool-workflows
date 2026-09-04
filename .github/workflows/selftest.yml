@@ -66,3 +66,14 @@ jobs:
     with:
       project_dir: tests/fixtures/infra-placeholder
       workflows_ref: ${{ github.event.pull_request.head.sha }}
+
+  tool-self:
+    uses: ./.github/workflows/ci-tool.yml
+    with:
+      workflows_ref: ${{ github.event.pull_request.head.sha }}
+
+  docs-populated:
+    uses: ./.github/workflows/ci-docs.yml
+    with:
+      project_dir: tests/fixtures/docs-populated
+      workflows_ref: ${{ github.event.pull_request.head.sha }}

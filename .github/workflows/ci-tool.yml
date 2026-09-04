@@ -1,0 +1,62 @@
+name: ci-tool
+
+on:
+  workflow_call:
+    inputs:
+      workflows_ref:
+        description: ref of LambdaCoreAr/tool-workflows to load scripts from
+        required: false
+        default: v1
+        type: string
+      project_dir:
+        description: directory holding the tool
+        required: false
+        default: .
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install actionlint and shellcheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+          curl -fsSL "https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin actionlint
+      - name: Lint workflows
+        working-directory: ${{ inputs.project_dir }}
+        run: |
+          if compgen -G ".github/workflows/*.yml" > /dev/null; then
+            actionlint
+          else
+            echo "no workflows — nothing to lint"
+          fi
+      - name: Lint shell
+        working-directory: ${{ inputs.project_dir }}
+        run: |
+          mapfile -t files < <(find . -name '*.sh' -not -path './.git/*')
+          if [[ ${#files[@]} -gt 0 ]]; then
+            shellcheck "${files[@]}"
+          else
+            echo "no shell scripts — nothing to lint"
+          fi
+
+  pr-title:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Load scripts
+        uses: actions/checkout@v4
+        with:
+          repository: LambdaCoreAr/tool-workflows
+          ref: ${{ inputs.workflows_ref }}
+          path: .tool-workflows
+      - name: Validate the pull request title
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+          BODY: ${{ github.event.pull_request.body }}
+        run: .tool-workflows/scripts/pr-title-check.sh "$TITLE" "$BODY"
