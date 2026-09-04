@@ -37,6 +37,12 @@ setup() {
   [[ "$output" == *"bump=major"* ]]
 }
 
+@test "a BREAKING CHANGE mention in prose is not a footer" {
+  run "$SCRIPT" "fix: header parsing" "we once had a BREAKING CHANGE: incident, but not this time"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"bump=patch"* ]]
+}
+
 @test "non-version-bearing types bump nothing" {
   run "$SCRIPT" "chore: bump deps"
   [ "$status" -eq 0 ]

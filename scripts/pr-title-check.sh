@@ -25,7 +25,7 @@ case $type in
   fix)  bump="patch" ;;
 esac
 
-if [[ -n $bang ]] || [[ $body == *"BREAKING CHANGE:"* ]]; then
+if [[ -n $bang ]] || grep -q '^BREAKING CHANGE:' <<<"$body"; then
   breaking=true
   bump=major
 fi
