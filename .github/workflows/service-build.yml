@@ -17,6 +17,11 @@ on:
         required: false
         default: v1
         type: string
+    secrets:
+      INFRA_APP_ID:
+        required: true
+      INFRA_APP_PRIVATE_KEY:
+        required: true
 
 permissions:
   contents: read
@@ -66,6 +71,15 @@ jobs:
       - name: No version-bearing changes
         if: steps.guard.outputs.is_template == 'false' && steps.version.outputs.bump == 'none'
         run: echo "nothing version-bearing since the last release — no prerelease"
+      - name: Check the infra repository is in scope
+        if: steps.guard.outputs.is_template == 'false' && steps.version.outputs.bump != 'none'
+        env:
+          INFRA: ${{ inputs.infra_repo }}
+        run: |
+          case "$INFRA" in
+            infra-*) ;;
+            *) echo "::error::infra_repo must name an infra-* repository, got ${INFRA}"; exit 1 ;;
+          esac
       - name: Compute the prerelease number
         id: rc
         if: steps.guard.outputs.is_template == 'false' && steps.version.outputs.bump != 'none'
@@ -73,9 +87,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           NAME: ${{ steps.name.outputs.name }}
         run: |
-          gh api --paginate \
-            "/orgs/LambdaCoreAr/packages/container/${NAME}/versions" \
-            --jq '.[].metadata.container.tags[]' 2>/dev/null > tags.txt || : > tags.txt
+          # A 404 means the package does not exist yet, which is rc=1. Every other
+          # failure must abort: an empty tag list restarts numbering, and the push
+          # below would then move an already-published prerelease to different bytes
+          # — silently, on a green run.
+          if ! gh api --paginate \
+                 "/orgs/LambdaCoreAr/packages/container/${NAME}/versions" \
+                 --jq '.[].metadata.container.tags[]? // empty' > tags.txt 2> err.txt; then
+            grep -q 'HTTP 404' err.txt || { cat err.txt >&2; exit 1; }
+            : > tags.txt
+          fi
           .tool-workflows/scripts/rc-number.sh "${{ steps.version.outputs.version }}" \
             < tags.txt >> "$GITHUB_OUTPUT"
       - name: Log in to GHCR
@@ -90,6 +111,13 @@ jobs:
         env:
           TAG: ghcr.io/lambdacorear/${{ steps.name.outputs.name }}:${{ steps.version.outputs.version }}-rc.${{ steps.rc.outputs.rc }}
         run: |
+          if docker manifest inspect "$TAG" > /dev/null 2>&1; then
+            echo "::error::${TAG} already exists — refusing to overwrite a published prerelease"
+            exit 1
+          fi
+          # The scripts checkout and these scratch files sit in the build context.
+          # A service Dockerfile with `COPY . .` would otherwise bake them into the image.
+          printf '%s\n' '.tool-workflows/' 'tags.txt' 'err.txt' >> .dockerignore
           docker build -t "$TAG" .
           docker push "$TAG"
       - name: Mint an infra token
@@ -115,12 +143,16 @@ jobs:
           git config user.email "infra-bot@lambdacore.com.ar"
           branch="bump/${NAME}-${VERSION}"
           git checkout -b "$branch"
-          if grep -q "^${NAME}_version" environments/dev.tfvars; then
-            sed -i "s|^${NAME}_version.*|${NAME}_version = \"${VERSION}\"|" environments/dev.tfvars
+          mkdir -p environments
+          touch environments/dev.tfvars
+          if grep -qE "^${NAME}_version[[:space:]]*=" environments/dev.tfvars; then
+            sed -i -E "s|^${NAME}_version[[:space:]]*=.*|${NAME}_version = \"${VERSION}\"|" \
+              environments/dev.tfvars
           else
             echo "${NAME}_version = \"${VERSION}\"" >> environments/dev.tfvars
           fi
-          git commit -am "chore: pin ${NAME} to ${VERSION} in dev"
+          git add environments/dev.tfvars
+          git commit -m "chore: pin ${NAME} to ${VERSION} in dev"
           git push -u origin "$branch"
           gh pr create --title "chore: pin ${NAME} to ${VERSION} in dev" \
             --body "Automated pin from ${GITHUB_REPOSITORY}@${GITHUB_SHA}."
