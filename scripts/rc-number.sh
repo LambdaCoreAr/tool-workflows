@@ -12,6 +12,7 @@ while IFS= read -r tag; do
   [[ $tag == "${version}-rc."* ]] || continue
   n=${tag#"${version}-rc."}
   [[ $n =~ ^[0-9]+$ ]] || continue
+  n=$((10#$n))   # 10# forces base 10; bare 08 or 09 is an invalid octal literal
   (( n > highest )) && highest=$n
 done
 

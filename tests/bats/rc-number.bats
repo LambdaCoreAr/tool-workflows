@@ -35,6 +35,12 @@ setup() {
   [[ "$output" == "rc=5" ]]
 }
 
+@test "a zero-padded prerelease number is read as decimal" {
+  run bash -c "printf 'v1.3.0-rc.09\n' | '$SCRIPT' 1.3.0"
+  [ "$status" -eq 0 ]
+  [[ "$output" == "rc=10" ]]
+}
+
 @test "numeric order, not lexical" {
   run bash -c "printf 'v1.3.0-rc.9\nv1.3.0-rc.10\n' | '$SCRIPT' 1.3.0"
   [[ "$output" == "rc=11" ]]
