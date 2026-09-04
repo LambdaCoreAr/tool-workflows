@@ -60,8 +60,16 @@ jobs:
           latest=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n1)
           range=${latest:+${latest}..HEAD}
           git log "${range:-HEAD}" --pretty='- %s' > notes.md
-          git tag "v${VERSION}"
+          # Idempotent, so a rerun after a partial failure converges. fetch-depth: 0
+          # means the checkout already carries any tag a previous attempt pushed, and
+          # an unguarded `git tag` would then abort before reaching the steps that
+          # never finished.
+          if ! git ls-remote --exit-code --tags origin "refs/tags/v${VERSION}" > /dev/null 2>&1; then
+            git tag "v${VERSION}"
+            git push origin "v${VERSION}"
+          fi
           git tag -f "$major"
-          git push origin "v${VERSION}"
           git push origin -f "$major"
-          gh release create "v${VERSION}" --title "v${VERSION}" --notes-file notes.md
+          if ! gh release view "v${VERSION}" > /dev/null 2>&1; then
+            gh release create "v${VERSION}" --title "v${VERSION}" --notes-file notes.md
+          fi
