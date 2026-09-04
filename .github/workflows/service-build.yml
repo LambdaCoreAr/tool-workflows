@@ -118,7 +118,7 @@ jobs:
           # The scripts checkout and these scratch files sit in the build context.
           # A service Dockerfile with `COPY . .` would otherwise bake them into the image.
           printf '%s\n' '.tool-workflows/' 'tags.txt' 'err.txt' >> .dockerignore
-          docker build -t "$TAG" .
+          docker build --label "org.opencontainers.image.revision=${GITHUB_SHA}" -t "$TAG" .
           docker push "$TAG"
       - name: Mint an infra token
         id: infra_token

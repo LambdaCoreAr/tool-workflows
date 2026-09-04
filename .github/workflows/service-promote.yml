@@ -58,6 +58,8 @@ jobs:
             exit 1
           fi
           repo="${GITHUB_REPOSITORY#*/}"
+          # Grouped, not three separate appends: shellcheck's SC2129 fails the lint
+          # gate on consecutive redirections to the same file.
           {
             echo "name=${repo#svc-}"
             echo "tag=${tag}"
@@ -71,21 +73,46 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ github.token }}
       - name: Re-tag the same digest
+        id: retag
         if: steps.guard.outputs.is_template == 'false'
         env:
           IMAGE: ghcr.io/lambdacorear/${{ steps.name.outputs.name }}
+          TAG: ${{ steps.name.outputs.tag }}
+          VERSION: ${{ steps.name.outputs.version }}
         run: |
-          docker buildx imagetools create \
-            --tag "${IMAGE}:${{ steps.name.outputs.version }}" \
-            "${IMAGE}:${{ steps.name.outputs.tag }}"
-          docker buildx imagetools inspect "${IMAGE}:${{ steps.name.outputs.version }}"
+          # Refuse to repoint a tag that has already been released. Without this,
+          # promoting a second prerelease of the same version silently moves
+          # :X.Y.Z to different bytes before the git tag push fails.
+          if docker manifest inspect "${IMAGE}:${VERSION}" > /dev/null 2>&1; then
+            echo "::error::${IMAGE}:${VERSION} already exists — refusing to repoint a released tag"
+            exit 1
+          fi
+          src=$(docker buildx imagetools inspect "${IMAGE}:${TAG}" --format '{{ .Manifest.Digest }}')
+          # --prefer-index=false keeps a single-platform manifest a manifest; the
+          # default would wrap it in a fresh index and change the digest.
+          docker buildx imagetools create --prefer-index=false \
+            --tag "${IMAGE}:${VERSION}" "${IMAGE}:${TAG}"
+          dst=$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" --format '{{ .Manifest.Digest }}')
+          if [[ "$src" != "$dst" ]]; then
+            echo "::error::promoted digest ${dst} does not match prerelease digest ${src}"
+            exit 1
+          fi
+          echo "digest=${src}" >> "$GITHUB_OUTPUT"
       - name: Cut the release
         if: steps.guard.outputs.is_template == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.name.outputs.version }}
+          TAG: ${{ steps.name.outputs.tag }}
+          DIGEST: ${{ steps.retag.outputs.digest }}
         run: |
-          git tag "v${VERSION}"
-          git push origin "v${VERSION}"
-          gh release create "v${VERSION}" --title "v${VERSION}" \
-            --notes "Promoted from ${{ steps.name.outputs.tag }}. Same image digest."
+          # Both halves are guarded so a retry after a partial failure converges
+          # instead of dying on the half that already succeeded.
+          if ! git ls-remote --exit-code --tags origin "refs/tags/v${VERSION}" > /dev/null 2>&1; then
+            git tag "v${VERSION}"
+            git push origin "v${VERSION}"
+          fi
+          if ! gh release view "v${VERSION}" > /dev/null 2>&1; then
+            gh release create "v${VERSION}" --title "v${VERSION}" \
+              --notes "Promoted from ${TAG}. Digest ${DIGEST}."
+          fi
