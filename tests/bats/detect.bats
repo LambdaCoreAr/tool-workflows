@@ -32,6 +32,12 @@ setup() {
   [[ "$output" == "has_project=false" ]]
 }
 
+@test "a csproj vendored under node_modules is not this repository's project" {
+  run "$STACK" "$FIX/node-nested-csproj" dotnet
+  [ "$status" -eq 0 ]
+  [[ "$output" == "has_project=false" ]]
+}
+
 @test "an unknown language is rejected" {
   run "$STACK" "$FIX/node-populated" rust
   [ "$status" -eq 1 ]
