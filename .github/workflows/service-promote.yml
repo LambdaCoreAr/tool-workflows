@@ -84,7 +84,9 @@ jobs:
           # promoting a second prerelease of the same version silently moves
           # :X.Y.Z to different bytes before the git tag push fails.
           if docker manifest inspect "${IMAGE}:${VERSION}" > /dev/null 2>&1; then
-            echo "::error::${IMAGE}:${VERSION} already exists — refusing to repoint a released tag"
+            echo "::error::${IMAGE}:${VERSION} already exists — refusing to repoint a released tag."
+            echo "::error::If a previous promotion failed verification, that tag may be unverified;"
+            echo "::error::delete it in GHCR, then re-run this workflow."
             exit 1
           fi
           src=$(docker buildx imagetools inspect "${IMAGE}:${TAG}" --format '{{ .Manifest.Digest }}')
@@ -94,7 +96,9 @@ jobs:
             --tag "${IMAGE}:${VERSION}" "${IMAGE}:${TAG}"
           dst=$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" --format '{{ .Manifest.Digest }}')
           if [[ "$src" != "$dst" ]]; then
-            echo "::error::promoted digest ${dst} does not match prerelease digest ${src}"
+            echo "::error::promoted digest ${dst} does not match prerelease digest ${src}."
+            echo "::error::${IMAGE}:${VERSION} now exists but is UNVERIFIED. Delete that tag in"
+            echo "::error::GHCR before re-running, or the guard above will refuse every retry."
             exit 1
           fi
           echo "digest=${src}" >> "$GITHUB_OUTPUT"
