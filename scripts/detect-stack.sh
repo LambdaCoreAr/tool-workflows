@@ -16,7 +16,11 @@ case $language in
     if [[ -f "$dir/package.json" ]]; then found=true; else found=false; fi
     ;;
   dotnet)
-    if find "$dir" -name '*.csproj' -o -name '*.sln' | grep -q .; then
+    # The group parentheses are load-bearing: without them the implicit -print
+    # binds only to the last -name. The exclusions keep a vendored sample
+    # project inside node_modules from passing as this repository's own.
+    if find "$dir" \( -name '*.csproj' -o -name '*.sln' \) \
+         -not -path '*/node_modules/*' -not -path '*/.git/*' | grep -q .; then
       found=true
     else
       found=false
